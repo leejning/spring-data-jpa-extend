@@ -1,31 +1,28 @@
-package com.dgut.online.jpa.queryDTO;
+package com.dgut.online.jpa.querybuilder;
 
 
 import com.dgut.online.jpa.bean.Course;
+import com.dgut.online.jpa.extend.BaseEntityQueryBuilder;
 import com.dgut.online.jpa.extend.ExtendedSpecification;
 import com.dgut.online.jpa.extend.SelectorBuilder;
 import lombok.Data;
 import org.assertj.core.util.Lists;
-import org.assertj.core.util.Maps;
 
 import javax.persistence.criteria.*;
 import java.util.*;
 
 /**
- * @ClassName CourseQueryDTO
+ * @ClassName CourseEntityQueryBuilder
  * @Description: TODO
  * @Author Administrator
  * @Date 2019/11/14 0014
  * @Version V1.0
  **/
 @Data
-public class CourseQueryDTO {
+public class CourseEntityQueryBuilder extends BaseEntityQueryBuilder {
 
-    private boolean withIn;
-    private String inField;
-    private List<String> inValue = Collections.EMPTY_LIST;
 
-    public static ExtendedSpecification<Course> getWhere(CourseQueryDTO queryDTO) {
+    public static ExtendedSpecification<Course> getWhere(CourseEntityQueryBuilder queryDTO) {
         return new ExtendedSpecification<Course>() {
             //有范围查询要使用这两个属性，
             Map<String, ParameterExpression<Collection<?>>> ipm;
@@ -59,8 +56,11 @@ public class CourseQueryDTO {
             @Override
             public SelectorBuilder getSelectorBuilder() {
                 SelectorBuilder selectorBuilder = new SelectorBuilder();
-                selectorBuilder.append("id","courseName","courseType","teacherName");
-                return selectorBuilder;
+                String[] fieldNames = {"id","courseName","courseType","teacherName"};
+                if(queryDTO.getResultClass()!=null){
+                    fieldNames = initResultFields(queryDTO.getResultClass());
+                }
+                return selectorBuilder.append(fieldNames);
             }
 
             @Override

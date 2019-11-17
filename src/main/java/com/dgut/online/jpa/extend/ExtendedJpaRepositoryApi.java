@@ -19,6 +19,12 @@ import java.util.List;
 @NoRepositoryBean
 public interface ExtendedJpaRepositoryApi<T, ID> extends JpaRepository<T, ID>, JpaSpecificationExecutor<T> {
 
+    public List<?> findAll(ExtendedSpecification<T> spec, Class<?> resultClass);
+
+    public List<?> findAll(ExtendedSpecification<T> spec, Sort sort, Class<?> resultClass);
+
+    public Page<?> findAll(ExtendedSpecification<T> spec, Pageable pageable, Class<?> resultClass);
+
     public List<T> findAll(ExtendedSpecification<T> spec);
 
     public List<T> findAll(ExtendedSpecification<T> spec, Sort sort);

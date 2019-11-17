@@ -2,23 +2,24 @@ package org.springframework.data.jpa.repository.support;
 
 import com.dgut.online.jpa.extend.ExtendedJpaRepositoryApi;
 import com.dgut.online.jpa.extend.ExtendedSpecification;
+import com.dgut.online.jpa.extend.SelectorBuilder;
+import lombok.extern.slf4j.Slf4j;
+import org.assertj.core.util.Lists;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.repository.support.PageableExecutionUtils;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
-import javax.persistence.EntityManager;
-import javax.persistence.LockModeType;
-import javax.persistence.Query;
-import javax.persistence.TypedQuery;
+import javax.persistence.*;
 import javax.persistence.criteria.*;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import static org.springframework.data.jpa.repository.query.QueryUtils.toOrders;
 
@@ -29,6 +30,7 @@ import static org.springframework.data.jpa.repository.query.QueryUtils.toOrders;
  * @Date 2019/11/12 0012
  * @Version V1.0
  **/
+@Slf4j
 public class ExtendedJpaRepository<T, ID> extends SimpleJpaRepository<T, ID> implements ExtendedJpaRepositoryApi<T, ID> {
     private EntityManager entityManager;
     private JpaEntityInformation<T, ?> entityInformation;
@@ -38,6 +40,162 @@ public class ExtendedJpaRepository<T, ID> extends SimpleJpaRepository<T, ID> imp
         this.entityManager = entityManager;
         this.entityInformation = entityInformation;
     }
+
+    /**
+     *
+     *  下面几个查询是把结果封装到某个DTO类
+     *
+     */
+
+    /**
+     * @param spec
+     * @param resultClass DTO类
+     * @return
+     */
+    @Override
+    public List<?> findAll(ExtendedSpecification<T> spec, Class<?> resultClass) {
+        TypedQuery<Tuple> query = getQuery(spec, Sort.unsorted(), resultClass);
+        return applyQueryHints(query, resultClass);
+    }
+
+    @Override
+    public List<?> findAll(ExtendedSpecification<T> spec, Sort sort, Class<?> resultClass) {
+        TypedQuery<Tuple> query = getQuery(spec, sort, resultClass);
+        return applyQueryHints(query, resultClass);
+    }
+
+    @Override
+    public Page<?> findAll(ExtendedSpecification<T> spec, Pageable pageable, Class<?> resultClass) {
+        TypedQuery<Tuple> query = getQuery(spec, pageable, resultClass);
+        return pageable.isUnpaged() ? new PageImpl(query.getResultList())
+                : readPage(query, getDomainClass(), pageable, spec, resultClass);
+    }
+
+    protected Page<?> readPage(TypedQuery<Tuple> query, final Class<T> domainClass, Pageable pageable,
+                               @Nullable Specification<T> spec, Class<?> resultClass) {
+        if (pageable.isPaged()) {
+            query.setFirstResult((int) pageable.getOffset());
+            query.setMaxResults(pageable.getPageSize());
+        }
+        List<?> resultList = applyQueryHints(query, resultClass);
+        return PageableExecutionUtils.getPage(resultList, pageable,
+                () -> executeCountQuery(getCountQuery(spec, domainClass)));
+    }
+
+    private static long executeCountQuery(TypedQuery<Long> query) {
+
+        Assert.notNull(query, "TypedQuery must not be null!");
+
+        List<Long> totals = query.getResultList();
+        long total = 0L;
+
+        for (Long element : totals) {
+            total += element == null ? 0 : element;
+        }
+        return total;
+    }
+
+    private TypedQuery<Tuple> getQuery(ExtendedSpecification<T> spec, Pageable pageable, Class<?> resultClass) {
+        Sort sort = pageable.isPaged() ? pageable.getSort() : Sort.unsorted();
+        return getQuery(spec, sort, resultClass);
+    }
+
+
+    /**
+     * 结果集是实体类的某个DTO类的getQuery方法重载
+     *
+     * @param spec
+     * @param sort
+     * @param resultClass DTO类
+     * @return
+     */
+    protected TypedQuery<Tuple> getQuery(@Nullable ExtendedSpecification<T> spec, Sort sort, Class<?> resultClass) {
+        CriteriaBuilder builder = entityManager.getCriteriaBuilder();
+        CriteriaQuery<Tuple> query = builder.createTupleQuery();
+        Root<T> root = query.from(getDomainClass());
+
+        SelectorBuilder selectorBuilder = spec.getSelectorBuilder();
+        Assert.notNull(selectorBuilder, "SelectorBuilder选择器不能为空！");
+
+        /**
+         * 构造select...
+         */
+        query.multiselect(selectorBuilder.bulid(builder, root));
+
+        /**
+         * 构造where...
+         */
+        Predicate predicate = spec.toPredicate(root, query, builder);
+        if (predicate != null) {
+            query.where(predicate);
+        }
+
+        /**
+         * 构造order...
+         */
+        if (sort.isSorted()) {
+            query.orderBy(toOrders(sort, root, builder));
+        }
+        TypedQuery<Tuple> typeQuery = entityManager.createQuery(query);
+        /**
+         * 填充in查询的值
+         */
+        if (spec.hasInCondition()) {
+            fillInfieldValues(typeQuery, spec);
+        }
+
+        return typeQuery;
+    }
+
+    /**
+     * 封装查询结果到某个DTO类
+     *
+     * @param query
+     * @param resultClass DTO类
+     * @return
+     */
+    private List<?> applyQueryHints(TypedQuery<Tuple> query, Class<?> resultClass) {
+        List<Tuple> resultList = query.getResultList();
+        if (resultList.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Tuple tuple1 = resultList.get(0);
+        List<? extends Class<?>> collect = tuple1.getElements().stream().map(t -> t.getJavaType()).collect(Collectors.toList());
+        Class[] classes = collect.toArray(new Class[(collect.size())]);
+        Constructor<?> constructor = null;
+        try {
+            constructor = resultClass.getConstructor(classes);
+        } catch (NoSuchMethodException e) {
+            log.error(resultClass.getName() + "——DTO类没有对应的构造方法,参数列表为：看下面");
+            e.printStackTrace();
+        }
+        List<Object> list = Lists.newArrayList();
+        for (Tuple tuple : resultList) {
+            Object[] objects = new Object[collect.size()];
+            for (int i = 0; i < collect.size(); i++) {
+                objects[i] = tuple.get(i);
+            }
+            Object o = null;
+            try {
+                o = constructor.newInstance(objects);
+            } catch (InstantiationException | InvocationTargetException e) {
+                log.error("创建DTO类对象失败");
+                e.printStackTrace();
+            } catch (IllegalAccessException e) {
+                log.error(resultClass.getName() + "——DTO类构造方法参数与结果集的字段不一致！");
+                e.printStackTrace();
+            }
+            list.add(o);
+        }
+        return list;
+    }
+
+
+    /**
+     * ================================================================================================================
+     * | 下面的查询方法返回的是实体类
+     * ================================================================================================================
+     */
 
     @Override
     public List<T> findAll(ExtendedSpecification<T> spec) {
